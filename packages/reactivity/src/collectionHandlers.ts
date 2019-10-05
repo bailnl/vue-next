@@ -95,11 +95,13 @@ function deleteEntry(this: any, key: any) {
 
 function clear(this: any) {
   const target = toRaw(this)
+  // 取得原型
   const proto: any = Reflect.getPrototypeOf(this)
   const hadItems = target.size !== 0
   const oldTarget = target instanceof Map ? new Map(target) : new Set(target)
   // forward the operation before queueing reactions
   const result = proto.clear.call(target)
+  // 触发清除处理，开发模式下有更多的信息
   if (hadItems) {
     /* istanbul ignore else */
     if (__DEV__) {
@@ -115,6 +117,7 @@ function createForEach(isReadonly: boolean) {
   return function forEach(this: any, callback: Function, thisArg?: any) {
     const observed = this
     const target = toRaw(observed)
+    // 取得原型
     const proto: any = Reflect.getPrototypeOf(target)
     const wrap = isReadonly ? toReadonly : toReactive
     track(target, OperationTypes.ITERATE)
@@ -132,15 +135,19 @@ function createIterableMethod(method: string | symbol, isReadonly: boolean) {
   return function(this: any, ...args: any[]) {
     const target = toRaw(this)
     const proto: any = Reflect.getPrototypeOf(target)
+    // 判断是否成对数据，比如 Map 是由 key value 组成的
     const isPair =
       method === 'entries' ||
       (method === Symbol.iterator && target instanceof Map)
+    // 取内部迭代器
     const innerIterator = proto[method].apply(target, args)
     const wrap = isReadonly ? toReadonly : toReactive
     track(target, OperationTypes.ITERATE)
+    // 返回包装后的迭代器， 迭代器取值是原迭代器返回值观察后的版本
     // return a wrapped iterator which returns observed versions of the
     // values emitted from the real iterator
     return {
+      // 迭代器
       // iterator protocol
       next() {
         const { value, done } = innerIterator.next()
@@ -151,6 +158,7 @@ function createIterableMethod(method: string | symbol, isReadonly: boolean) {
               done
             }
       },
+      // 可迭代
       // iterable protocol
       [Symbol.iterator]() {
         return this
@@ -164,6 +172,7 @@ function createReadonlyMethod(
   type: OperationTypes
 ): Function {
   return function(this: any, ...args: any[]) {
+    // 可以通过unlock来控制 LOCKED flag 来解锁 readonly 的操作
     if (LOCKED) {
       if (__DEV__) {
         const key = args[0] ? `on key "${args[0]}" ` : ``
@@ -209,6 +218,7 @@ const readonlyInstrumentations: any = {
   forEach: createForEach(true)
 }
 
+// 创建迭代器相关的方法代理处理函数
 const iteratorMethods = ['keys', 'values', 'entries', Symbol.iterator]
 iteratorMethods.forEach(method => {
   mutableInstrumentations[method] = createIterableMethod(method, false)
@@ -221,12 +231,14 @@ function createInstrumentationGetter(instrumentations: any) {
     key: string | symbol,
     receiver: any
   ) {
+    // 如果有代理操作，就使用代理操作
     target =
       hasOwn(instrumentations, key) && key in target ? instrumentations : target
     return Reflect.get(target, key, receiver)
   }
 }
 
+// let a = new Set([1, 2, 3]);  使用 a.add(4)/a.values()...等操作时都会触发 proxy get 行为，所以代理 get 行为就好，返回自定义操作函数。
 export const mutableCollectionHandlers: ProxyHandler<any> = {
   get: createInstrumentationGetter(mutableInstrumentations)
 }
