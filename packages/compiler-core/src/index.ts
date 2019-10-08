@@ -32,12 +32,15 @@ export function baseCompile(
     }
   }
 
+  // 将 template(模板) 解析成 ast(抽象语法树)
+  // 非字符串的话是 RootNode, 就不需要转换了
   const ast = isString(template) ? parse(template, options) : template
 
   const prefixIdentifiers =
     !__BROWSER__ &&
     (options.prefixIdentifiers === true || options.mode === 'module')
 
+  // 优化一波
   transform(ast, {
     ...options,
     prefixIdentifiers,
@@ -64,6 +67,7 @@ export function baseCompile(
     }
   })
 
+  // 最后生成代理
   return generate(ast, options)
 }
 

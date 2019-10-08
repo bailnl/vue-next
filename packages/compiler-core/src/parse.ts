@@ -126,6 +126,7 @@ function parseChildren(
     const s = context.source
     let node: TemplateChildNode | TemplateChildNode[] | undefined = undefined
 
+    // 插值表达式
     if (startsWith(s, context.options.delimiters[0])) {
       // '{{'
       node = parseInterpolation(context, mode)
@@ -136,11 +137,14 @@ function parseChildren(
       } else if (s[1] === '!') {
         // https://html.spec.whatwg.org/multipage/parsing.html#markup-declaration-open-state
         if (startsWith(s, '<!--')) {
+          // 注释
           node = parseComment(context)
         } else if (startsWith(s, '<!DOCTYPE')) {
+          // 文档声明
           // Ignore DOCTYPE by a limitation.
           node = parseBogusComment(context)
         } else if (startsWith(s, '<![CDATA[')) {
+          // CDATA 数据， 作用请查看 https://stackoverflow.com/questions/2784183/what-does-cdata-in-xml-mean
           if (ns !== Namespaces.HTML) {
             node = parseCDATA(context, ancestors)
           } else {
@@ -148,28 +152,35 @@ function parseChildren(
             node = parseBogusComment(context)
           }
         } else {
+          // 到了此处，说明就一个不合规范的注释类代码比如 <!fuck>
           emitError(context, ErrorCodes.INCORRECTLY_OPENED_COMMENT)
           node = parseBogusComment(context)
         }
       } else if (s[1] === '/') {
+        // </ 表示结束标签
         // https://html.spec.whatwg.org/multipage/parsing.html#end-tag-open-state
         if (s.length === 2) {
+          // 但是不能只剩2个字符， </ 酱紫就是不规范的
           emitError(context, ErrorCodes.EOF_BEFORE_TAG_NAME, 2)
         } else if (s[2] === '>') {
+          // </> 也不行， 缺少 tag name, 我表示很绝望， 并没有 react 里面的 <></> 语法
           emitError(context, ErrorCodes.MISSING_END_TAG_NAME, 2)
           advanceBy(context, 3)
           continue
         } else if (/[a-z]/i.test(s[2])) {
+          // TODO: </a 开头不合法吗？？？, 还标记为 Vue 特定parse错误!!!
           emitError(context, ErrorCodes.X_INVALID_END_TAG)
           parseTag(context, TagType.End, parent)
           continue
         } else {
+          // 要显示 < 请使用 &lt 替代
           emitError(context, ErrorCodes.INVALID_FIRST_CHARACTER_OF_TAG_NAME, 2)
           node = parseBogusComment(context)
         }
       } else if (/[a-z]/i.test(s[1])) {
         node = parseElement(context, ancestors)
       } else if (s[1] === '?') {
+        // <? 这种也不合法，又不是写 php(世界上最好的语言)
         emitError(
           context,
           ErrorCodes.UNEXPECTED_QUESTION_MARK_INSTEAD_OF_TAG_NAME,
@@ -180,6 +191,8 @@ function parseChildren(
         emitError(context, ErrorCodes.INVALID_FIRST_CHARACTER_OF_TAG_NAME, 1)
       }
     }
+
+    // 如果不是 插值表达式 or 节点， 那就是文本
     if (!node) {
       node = parseText(context, mode)
     }
@@ -201,11 +214,14 @@ function pushNode(
   nodes: TemplateChildNode[],
   node: TemplateChildNode
 ): void {
+  // 生产环境忽略注释
   // ignore comments in production
   /* istanbul ignore next */
   if (!__DEV__ && node.type === NodeTypes.COMMENT) {
     return
   }
+
+  // 允许配置忽略空白字符
   if (
     context.options.ignoreSpaces &&
     node.type === NodeTypes.TEXT &&
@@ -214,6 +230,9 @@ function pushNode(
     return
   }
 
+  // 如果当前节点和上一个节点都文本节点并且是连续的，就合并
+  // 比如  a < b 这种情况
+  // 否则就放入 nodes 里面
   // Merge if both this and the previous node are text and those are consecutive.
   // This happens on "a < b" or something like.
   const prev = last(nodes)
@@ -364,6 +383,7 @@ const enum TagType {
   End
 }
 
+// 解析标签， 开始 或者 结束
 /**
  * Parse a tag (E.g. `<div id=a>`) with that type (start tag or end tag).
  */
@@ -385,14 +405,17 @@ function parseTag(
   const props = []
   const ns = context.options.getNamespace(tag, parent)
 
+  // 确定 tag 的类型
   let tagType = ElementTypes.ELEMENT
   if (tag === 'slot') tagType = ElementTypes.SLOT
   else if (tag === 'template') tagType = ElementTypes.TEMPLATE
   else if (/[A-Z-]/.test(tag)) tagType = ElementTypes.COMPONENT
 
+  // 步进
   advanceBy(context, match[0].length)
   advanceSpaces(context)
 
+  // 开始解析属性
   // Attributes.
   const attributeNames = new Set<string>()
   while (
@@ -400,36 +423,46 @@ function parseTag(
     !startsWith(context.source, '>') &&
     !startsWith(context.source, '/>')
   ) {
+    // 标签意外结束 source 可能是 / href=""> 不应该出现的 /
+    // 如果是结束的 / 就进不来 while 了。  所以有 / 一定是错了。
     if (startsWith(context.source, '/')) {
       emitError(context, ErrorCodes.UNEXPECTED_SOLIDUS_IN_TAG)
       advanceBy(context, 1)
       advanceSpaces(context)
       continue
     }
+    // 如果type 为标签结束就不应该有属性 例如  </p a="">
     if (type === TagType.End) {
       emitError(context, ErrorCodes.END_TAG_WITH_ATTRIBUTES)
     }
 
+    // 解析单个属性
     const attr = parseAttribute(context, attributeNames)
+    // 标签开始就存起来
     if (type === TagType.Start) {
       props.push(attr)
     }
 
+    // 属性之间需要空白符
     if (/^[^\t\r\n\f />]/.test(context.source)) {
       emitError(context, ErrorCodes.MISSING_WHITESPACE_BETWEEN_ATTRIBUTES)
     }
+    // 步进空白符
     advanceSpaces(context)
   }
 
   // Tag close.
   let isSelfClosing = false
+  // 有开始没有结束
   if (context.source.length === 0) {
     emitError(context, ErrorCodes.EOF_IN_TAG)
   } else {
+    // 自闭合
     isSelfClosing = startsWith(context.source, '/>')
     if (type === TagType.End && isSelfClosing) {
       emitError(context, ErrorCodes.END_TAG_WITH_TRAILING_SOLIDUS)
     }
+    // 根据是否自闭包来步进
     advanceBy(context, isSelfClosing ? 2 : 1)
   }
 
@@ -446,6 +479,7 @@ function parseTag(
   }
 }
 
+// 解析单个属性 可能是指令 也可能是原生的 attr
 function parseAttribute(
   context: ParserContext,
   nameSet: Set<string>
@@ -457,14 +491,18 @@ function parseAttribute(
   const match = /^[^\t\r\n\f />][^\t\r\n\f />=]*/.exec(context.source)!
   const name = match[0]
 
+  // 属性重复
   if (nameSet.has(name)) {
     emitError(context, ErrorCodes.DUPLICATE_ATTRIBUTE)
   }
+  // 添加属性名字表中
   nameSet.add(name)
 
+  // 缺少属性名 比如 <a ="1">
   if (name[0] === '=') {
     emitError(context, ErrorCodes.UNEXPECTED_EQUALS_SIGN_BEFORE_ATTRIBUTE_NAME)
   }
+  // <a href'="1"> 像属性名包含 "'< 都是异常情况
   {
     const pattern = /["'<]/g
     let m: RegExpExecArray | null
@@ -477,6 +515,7 @@ function parseAttribute(
     }
   }
 
+  // 处理完异常情况后就可以步进了。
   advanceBy(context, name.length)
 
   // Value
@@ -499,6 +538,8 @@ function parseAttribute(
   }
   const loc = getSelection(context, start)
 
+  // 如果是vue prop开头的属性名就是指令
+  // v-if v-bind:prop v-on:click @click :[key] 等等
   if (/^(v-|:|@|#)/.test(name)) {
     const match = /(?:^v-([a-z0-9-]+))?(?:(?::|^@|^#)([^\.]+))?(.+)?$/i.exec(
       name
@@ -507,6 +548,9 @@ function parseAttribute(
     let arg: ExpressionNode | undefined
 
     if (match[2]) {
+      // 例如 name 是 v-bind:testProp.sync，match[2] 就是 prop
+      // shift() 之后的结果就是 v-bind:  然后取长度就是开始的偏移位置
+      // 所以 loc 的就是 testProp 相关的信息
       const startOffset = name.split(match[2], 2)!.shift()!.length
       const loc = getSelection(
         context,
@@ -514,11 +558,16 @@ function parseAttribute(
         getNewPosition(context, start, startOffset + match[2].length)
       )
       let content = match[2]
+      // 默认标记为静态
       let isStatic = true
 
+      //  动态属性名的情况 <div v-bind:[key]="value"></div>
+      // 查看相关的RFC https://github.com/vuejs/rfcs/blob/master/active-rfcs/0003-dynamic-directive-arguments.md
       if (content.startsWith('[')) {
+        // 标记为非静态
         isStatic = false
 
+        // 只有开始没有结束
         if (!content.endsWith(']')) {
           emitError(
             context,
@@ -526,6 +575,7 @@ function parseAttribute(
           )
         }
 
+        // content 是 [key] 取到 key
         content = content.substr(1, content.length - 2)
       }
 
@@ -674,6 +724,10 @@ function parseInterpolation(
 function parseText(context: ParserContext, mode: TextModes): TextNode {
   __DEV__ && assert(context.source.length > 0)
 
+  // 找到应该结束的位置，以下4个条件，哪个更接近就是结束的位置
+  // 1. <   2. delimiters.open(默认{{)   3. CDATA模式时 ]]>  4.代码结束
+  // 比如 context 是 abc{{ msg }}<span>123</span>
+  // 结束的位置应该是 abc，而不是 abc{{ msg }}， 因为 {{ 比 < 更接近。
   const [open] = context.options.delimiters
   const endIndex = Math.min(
     ...[
@@ -685,9 +739,11 @@ function parseText(context: ParserContext, mode: TextModes): TextNode {
   )
   __DEV__ && assert(endIndex > 0)
 
+  // 获取未截取前的位置
   const start = getCursor(context)
   const content = parseTextData(context, endIndex, mode)
 
+  // 标记类型，内容及位置信息
   return {
     type: NodeTypes.TEXT,
     content,
@@ -696,6 +752,7 @@ function parseText(context: ParserContext, mode: TextModes): TextNode {
   }
 }
 
+// 从当前位置获取给定长度的文本数据，转换文本数据中的HTML实体
 /**
  * Get text data with a given length from the current location.
  * This translates HTML entities in the text data.
@@ -732,17 +789,30 @@ function parseTextData(
       // Named character reference.
       let name = '',
         value: string | undefined = undefined
+      // 符合 &[0-9a-z] 开头的模式。比如 &lt;
       if (/[0-9a-z]/i.test(context.source[1])) {
+        // web端的实体符号映射表在 packages/compiler-dom/src/namedChars.json
+        // maxCRNameLength 就是映射表中实体符号编码（也就是key）最长的那个。
+        // 不能从头开始找，因为没有办法确认 &lt 还是 &lt; ，后者明显多了一个字符;
+        // 所以得从最长的开始找，找到就退出。
+        // 比如用 source是  &lt;666
+        // 那么遍历映射表到key长度为3的时候，就取到了 lt;(也就是变量name)，去表里面找是否符合的数据
+        // 如果从头开始匹配，就匹配成了 lt 了。 那; 怎么办。
         for (
           let length = context.maxCRNameLength;
           !value && length > 0;
           --length
         ) {
+          // 例如把 &lt; => 变成 lt;
           name = context.source.substr(1, length)
+          // 从映射表里找出来对应的符号出来
           value = context.options.namedCharacterReferences[name]
         }
         if (value) {
+          // 是否存在分号，是&lt; 还是 &lt
           const semi = name.endsWith(';')
+          // 此条件进入属性值
+          // 比如 &lt=
           if (
             mode === TextModes.ATTRIBUTE_VALUE &&
             !semi &&
@@ -762,20 +832,25 @@ function parseTextData(
             }
           }
         } else {
+          // 没有在实体映射表中找到
           emitError(context, ErrorCodes.UNKNOWN_NAMED_CHARACTER_REFERENCE)
           text += '&'
           text += name
           advanceBy(context, 1 + name.length)
         }
       } else {
+        // 可能是 &= 之类的，不符号 &[0-9a-z] 就直接步进
         text += '&'
         advanceBy(context, 1)
       }
     } else {
+      // 比如符号 ẚ => &#x1E9A;  ¢ => &#162;
+      // 数字型字符， 比如后者
       // Numeric character reference.
       const hex = head[0] === '&#x'
       const pattern = hex ? /^&#x([0-9a-f]+);?/i : /^&#([0-9]+);?/
       const body = pattern.exec(context.source)
+      // 如果没有匹配到就报错！仅 &#x 或者 &#
       if (!body) {
         text += head[0]
         emitError(
@@ -786,19 +861,25 @@ function parseTextData(
       } else {
         // https://html.spec.whatwg.org/multipage/parsing.html#numeric-character-reference-end-state
         let cp = Number.parseInt(body[1], hex ? 16 : 10)
+        // 空
         if (cp === 0) {
           emitError(context, ErrorCodes.NULL_CHARACTER_REFERENCE)
           cp = 0xfffd
         } else if (cp > 0x10ffff) {
+          // 超出范围
           emitError(
             context,
             ErrorCodes.CHARACTER_REFERENCE_OUTSIDE_UNICODE_RANGE
           )
           cp = 0xfffd
         } else if (cp >= 0xd800 && cp <= 0xdfff) {
+          // 这个范围不能用，不成对。
+          // Illegal numeric character reference: non-pair surrogate.
           emitError(context, ErrorCodes.SURROGATE_CHARACTER_REFERENCE)
           cp = 0xfffd
         } else if ((cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe) {
+          // 不是字符， 那是啥？
+          // Illegal numeric character reference: non character.
           emitError(context, ErrorCodes.NONCHARACTER_CHARACTER_REFERENCE)
         } else if (
           (cp >= 0x01 && cp <= 0x08) ||
@@ -806,9 +887,13 @@ function parseTextData(
           (cp >= 0x0d && cp <= 0x1f) ||
           (cp >= 0x7f && cp <= 0x9f)
         ) {
+          // 控制字符
+          // Illegal numeric character reference: control character.
           emitError(context, ErrorCodes.CONTROL_CHARACTER_REFERENCE)
           cp = CCR_REPLACEMENTS[cp] || cp
         }
+        // 愉快的通过，转成字符
+        // ẚ => &#x1E9A;  cp 就是  parseInt('1E9A', 16) 最后得到 ẚ
         text += String.fromCodePoint(cp)
         advanceBy(context, body[0].length)
         if (!body![0].endsWith(';')) {
@@ -820,6 +905,8 @@ function parseTextData(
       }
     }
   }
+
+  // 最终把各种编码符号转出来
   return text
 }
 
