@@ -35,6 +35,7 @@ export function computed<T>(
   let dirty: boolean = true
   let value: any = undefined
 
+  // 创建一个 effect, 返回一个包装后的 getter
   const runner = effect(getter, {
     // 标记为 lazy，不立即执行
     lazy: true,
